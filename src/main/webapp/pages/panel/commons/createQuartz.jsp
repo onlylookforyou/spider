@@ -27,8 +27,8 @@
                        value="${spiderInfoId}">
             </div>
             <div class="form-group">
-                <label for="hourInterval">循环间隔小时数</label>
-                <input type="number" class="" id="hourInterval" name="hourInterval" placeholder="输入循环间隔小时数">
+                <label for="hourInterval">循环间隔分钟数</label>
+                <input type="number" class="" id="hourInterval" name="hourInterval" placeholder="循环间隔分钟数">
             </div>
             <div class="form-group">
                 <button type="submit" class="btn btn-secondary">提交</button>

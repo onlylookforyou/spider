@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd" >
+
+<mapper namespace="com.gs.spider.mapper.SpiderDataMapper">
+
+    <resultMap type="com.gs.spider.model.commons.spiderResultData" id="eastMap">
+        <id column="id" property="id"/>
+        <result column="__url" property="__url"/>
+        <result column="url" property="url"/>
+        <result column="__time" property="__time"/>
+        <result column="article_title" property="article_title"/>
+        <result column="article_content" property="article_content"/>
+        <result column="article_thumbnail" property="article_thumbnail"/>
+        <result column="article_author" property="article_author"/>
+        <result column="article_avatar" property="article_avatar"/>
+        <result column="article_publish_time" property="article_publish_time"/>
+        <result column="article_categories" property="article_categories"/>
+        <result column="article_topics" property="article_topics"/>
+        <result column="comments_count" property="comments_count"/>
+        <result column="__pk" property="__pk"/>
+        <result column="__version" property="__version"/>
+        <result column="status" property="status"/>
+    </resultMap>
+
+    <select id="selectByUrl" parameterType="String" resultMap="eastMap">
+        SELECT * FROM ${table} WHERE url = #{url}
+    </select>
+       <insert id="insert" parameterType="List">
+        INSERT INTO ${table} (__url,url,__time,article_title,article_content,article_thumbnail,article_author,article_avatar,article_publish_time,article_categories,article_topics,comments_count,__pk,__version,status) VALUES
+           <foreach collection="models" item="item" index="index"
+                    separator=",">
+               (
+               #{item.__url},
+               #{item.url},
+               #{item.__time},
+               #{item.article_title},
+               #{item.article_content},
+               #{item.article_thumbnail},
+               #{item.article_author},
+               #{item.article_avatar},
+               #{item.article_publish_time},
+               #{item.article_categories},
+               #{item.article_topics},
+               #{item.comments_count},
+               #{item.__pk},
+               #{item.__version},
+               #{item.status})
+           </foreach>
+       </insert>
+</mapper>
+

@@ -1,20 +1,28 @@
 package com.gs.spider.gather.commons;
 
-import com.google.common.base.Preconditions;
-import com.google.common.collect.Lists;
-import com.google.common.collect.Maps;
-import com.gs.spider.dao.CommonWebpageDAO;
-import com.gs.spider.dao.CommonWebpagePipeline;
-import com.gs.spider.dao.SpiderInfoDAO;
-import com.gs.spider.gather.async.AsyncGather;
-import com.gs.spider.gather.async.TaskManager;
-import com.gs.spider.model.async.State;
-import com.gs.spider.model.async.Task;
-import com.gs.spider.model.commons.SpiderInfo;
-import com.gs.spider.model.commons.Webpage;
-import com.gs.spider.utils.NLPExtractor;
-import com.gs.spider.utils.StaticValue;
+import java.io.File;
+import java.io.IOException;
+import java.net.BindException;
+import java.nio.charset.Charset;
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
+import java.util.Calendar;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Timer;
+import java.util.TimerTask;
+import java.util.UUID;
+import java.util.stream.Collectors;
+
+import javax.management.JMException;
+import javax.swing.text.AbstractDocument.Content;
+
 import org.apache.commons.io.FileUtils;
+import org.apache.commons.lang.ObjectUtils.Null;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.builder.EqualsBuilder;
 import org.apache.commons.lang3.builder.HashCodeBuilder;
@@ -28,6 +36,24 @@ import org.elasticsearch.index.query.QueryBuilders;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.springframework.beans.factory.annotation.Autowired;
+
+import com.google.common.base.Preconditions;
+import com.google.common.collect.Lists;
+import com.google.common.collect.Maps;
+import com.google.common.hash.Hashing;
+import com.gs.spider.dao.CommonWebpageDAO;
+import com.gs.spider.dao.CommonWebpagePipeline;
+import com.gs.spider.dao.SpiderInfoDAO;
+import com.gs.spider.gather.async.AsyncGather;
+import com.gs.spider.gather.async.TaskManager;
+import com.gs.spider.model.async.State;
+import com.gs.spider.model.async.Task;
+import com.gs.spider.model.commons.SpiderInfo;
+import com.gs.spider.model.commons.Webpage;
+import com.gs.spider.redis.RedisDB3Service;
+import com.gs.spider.utils.NLPExtractor;
+import com.gs.spider.utils.StaticValue;
+
 import us.codecraft.webmagic.Page;
 import us.codecraft.webmagic.Request;
 import us.codecraft.webmagic.Site;
@@ -40,15 +66,6 @@ import us.codecraft.webmagic.scheduler.QueueScheduler;
 import us.codecraft.webmagic.selector.Html;
 import us.codecraft.webmagic.selector.PlainText;
 import us.codecraft.webmagic.utils.UrlUtils;
-
-import javax.management.JMException;
-import java.io.File;
-import java.io.IOException;
-import java.net.BindException;
-import java.text.ParseException;
-import java.text.SimpleDateFormat;
-import java.util.*;
-import java.util.stream.Collectors;
 
 /**
  * CommonSpider
@@ -64,6 +81,9 @@ public class CommonSpider extends AsyncGather {
     private static List<String> ignoredUrls;
     //尽量先匹配长模板
     private static LinkedList<Pair<String, SimpleDateFormat>> datePattern = Lists.newLinkedList();
+    
+	@Autowired
+	private RedisDB3Service redisDB3Service;
 
     static {
         try {
@@ -116,10 +136,7 @@ public class CommonSpider extends AsyncGather {
     private final PageConsumer spiderInfoPageConsumer = (page, info, task) -> {
         try {
             long start = System.currentTimeMillis();
-//        if (page.getHtml().getDocument().getElementsByTag("a").size() <= 0) {
-//            page.setSkip(true);
-//            return;
-//        }
+
             //本页是否是startUrls里面的页面
             final boolean startPage = info.getStartURL().contains(page.getUrl().get());
             List<String> attachmentList = Lists.newLinkedList();
@@ -177,23 +194,7 @@ public class CommonSpider extends AsyncGather {
             if (startPage) {
                 page.setSkip(true);
             }
-            page.putField("url", page.getUrl().get());
-            page.putField("domain", info.getDomain());
-            page.putField("spiderInfoId", info.getId());
-            page.putField("gatherTime", new Date());
-            page.putField("spiderInfo", info);
-            page.putField("spiderUUID", task.getTaskId());
-            if (info.isSaveCapture()) {
-                page.putField("rawHTML", page.getHtml().get());
-            }
-            //转换静态字段
-            if (info.getStaticFields() != null && info.getStaticFields().size() > 0) {
-                Map<String, String> staticFieldList = Maps.newHashMap();
-                for (SpiderInfo.StaticField staticField : info.getStaticFields()) {
-                    staticFieldList.put(staticField.getName(), staticField.getValue());
-                }
-                page.putField("staticField", staticFieldList);
-            }
+            
             ///////////////////////////////////////////////////////
             String content;
             if (!StringUtils.isBlank(info.getContentXPath())) {//如果有正文的XPath的话优先使用XPath
@@ -213,7 +214,46 @@ public class CommonSpider extends AsyncGather {
                 clone.getElementsByAttributeValueContaining("style", "display:none").remove();
                 content = new Html(clone).smartContent().get();
             }
-            content = content.replaceAll("<script([\\s\\S]*?)</script>", "");
+            
+            if(StringUtils.isEmpty(content)){
+				LOG.info("页面为空:" +page.getUrl().get());
+				page.setSkip(true);
+                return;
+			}
+            
+            if(content!=null && content.length()<20){
+				LOG.info("页面内容过少:" +page.getUrl().get());
+				page.setSkip(true);
+                return;
+			}
+            
+            if(content.indexOf("未经授权")!=-1 || content.indexOf("不得转载")!=-1){
+				LOG.info("未经授权,不得转载页面:" +page.getUrl().get());
+				page.setSkip(true);
+                return;
+			}
+            
+            page.putField("url", page.getUrl().get());
+            page.putField("domain", info.getDomain());
+            page.putField("spiderInfoId", info.getId());
+            page.putField("gatherTime", new Date());
+            page.putField("spiderInfo", info);
+            page.putField("spiderUUID", task.getTaskId());
+            if (info.isSaveCapture()) {
+                page.putField("rawHTML", page.getHtml().get());
+            }
+            //转换静态字段
+            if (info.getStaticFields() != null && info.getStaticFields().size() > 0) {
+                Map<String, String> staticFieldList = Maps.newHashMap();
+                for (SpiderInfo.StaticField staticField : info.getStaticFields()) {
+                    staticFieldList.put(staticField.getName(), staticField.getValue());
+                }
+                page.putField("staticField", staticFieldList);
+            }
+
+            
+            //TODO  内容去标签，放在后续处理
+           /* content = content.replaceAll("<script([\\s\\S]*?)</script>", "");
             content = content.replaceAll("<style([\\s\\S]*?)</style>", "");
             content = content.replace("</p>", "***");
             content = content.replace("<BR>", "***");
@@ -222,7 +262,8 @@ public class CommonSpider extends AsyncGather {
             content = content.replace("***", "<br/>");
             content = content.replace("\n", "<br/>");
             content = content.replaceAll("(\\<br/\\>\\s*){2,}", "<br/> ");
-            content = content.replaceAll("(&nbsp;\\s*)+", " ");
+            content = content.replaceAll("(&nbsp;\\s*)+", " ");*/
+            
             page.putField("content", content);
             if (info.isNeedContent() && StringUtils.isBlank(content)) {//if the content is blank ,skip it!
                 page.setSkip(true);
@@ -281,6 +322,7 @@ public class CommonSpider extends AsyncGather {
             } else if (!StringUtils.isBlank(info.getPublishTimeReg())) {
                 publishTime = page.getHtml().regex(info.getPublishTimeReg()).get();
             }
+            
             Date publishDate = null;
             SimpleDateFormat simpleDateFormat = null;
             //获取SimpleDateFormat时间匹配模板,首先检测爬虫模板指定的,如果为空则自动探测
@@ -321,12 +363,20 @@ public class CommonSpider extends AsyncGather {
                         page.setSkip(true);
                         return;
                     }
+                    
+                    //如果解析时间错误，默认为当前时间
+                    page.putField("publishTime", new Date());
                 }
             } else if (info.isNeedPublishTime()) {//if the publishTime is blank ,skip it!
                 page.setSkip(true);
                 return;
+            }else{
+            	//如果没找到发布时间，设置当前时间
+            	page.putField("publishTime", new Date());
             }
             ///////////////////////////////////////////////////////
+            //TODO 设置永远不需要NLP处理,需要时后续处理
+            info.setDoNLP(false);
             if (info.isDoNLP()) {//判断本网站是否需要进行自然语言处理
                 //进行nlp处理之前先去除标签
                 String contentWithoutHtml = content.replaceAll("<br/>", "");
@@ -447,12 +497,17 @@ public class CommonSpider extends AsyncGather {
         QueueScheduler scheduler = new QueueScheduler() {
             @Override
             public void pushWhenNoDuplicate(Request request, us.codecraft.webmagic.Task task) {
-                int left = getLeftRequestsCount(task);
-                if (left <= staticValue.getLimitOfCommonWebpageDownloadQueue()) {
-                    super.pushWhenNoDuplicate(request, task);
-                }
+            	//如果该页面已经存在，就不再下载
+            	String key = Hashing.md5().hashString(request.getUrl(), Charset.forName("utf-8")).toString();
+            	if(!redisDB3Service.isExist(key)){
+            		 int left = getLeftRequestsCount(task);
+                     if (left <= staticValue.getLimitOfCommonWebpageDownloadQueue()) {
+                         super.pushWhenNoDuplicate(request, task);
+                     }
+            	}              
             }
         };
+            
         if (staticValue.isNeedEs()) {
             scheduler.setDuplicateRemover(commonWebpagePipeline);
         }
